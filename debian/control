@@ -1,0 +1,9 @@
+Source: driveu-gstreamer-decoder
+Section: video
+Maintainer: hanan <hanan@driveu.auto>
+Standards-Version: 4.1.2
+
+Package: driveu-gstreamer-decoder
+Architecture: amd64
+Description: DriveU decoders gstreamer lib
+
