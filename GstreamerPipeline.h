@@ -111,7 +111,16 @@ public:
         //}
 
         auto pushBufferIndex = _pushBufferIndex % RING;
-        _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped (encodedFrames[pushBufferIndex], _lastBufferDataSize);
+        _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped_full(
+                                        GST_MEMORY_FLAG_READONLY,
+                                        encodedFrames[pushBufferIndex],
+                                        _lastBufferDataSize,
+                                        0,
+                                        _lastBufferDataSize,
+                                        NULL,
+                                        NULL  // No free function - we manage the memory
+                                    );
+        // _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped (encodedFrames[pushBufferIndex], _lastBufferDataSize);
         GST_BUFFER_DURATION (_pushbuffer[pushBufferIndex] ) = gst_util_uint64_scale_int (1, GST_SECOND, 1);
         GST_BUFFER_TIMESTAMP (_pushbuffer[pushBufferIndex] ) = gst_util_uint64_scale (encodedFrameData._timestamp, GST_USECOND, 1);
         GST_BUFFER_OFFSET(_pushbuffer[pushBufferIndex]) = encodedFrameData._frameIndex;
@@ -266,7 +275,10 @@ private:
     //const std::string       _gstreamPipeline = "appsrc name=appsrc ! decodebin ! autovideosink sync=false async=false ";
     // TODO we should not use the decodebin and we should use directly with the dav1ddec -> ! ivfparse ! dav1ddec
     //const std::string       _gstreamPipeline = "appsrc name=appsrc ! filesink location=/tmp/AV1Video.ivf";
-    const std::string       _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ? std::getenv("GSTREAMER_PIPELINE") : "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! appsink name=appsink emit-signals=true sync=false";
+    const std::string _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ?
+        std::getenv("GSTREAMER_PIPELINE") :
+        "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
+    // const std::string       _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ? std::getenv("GSTREAMER_PIPELINE") : "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! appsink name=appsink emit-signals=true sync=false";
     std::atomic<bool>       _isRunning;
     GstElement *appsrc = NULL;
     GstBuffer *pushbuffer = NULL;
