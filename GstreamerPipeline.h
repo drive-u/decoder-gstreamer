@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <atomic>
 #include <queue>
+#include <vector>
 
 #define TRACE_VAL(val) #val << ": " << val << "; "
 //#define LOG_DEBUG(stream) stream
@@ -24,10 +25,15 @@
 #define LOG_ERROR(stream) stream
 class GstreamerPipeline {
 public:
+    static constexpr size_t INITIAL_FRAME_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per slot
+
     GstreamerPipeline():
         _isRunning( false )
     {
-            LOG_INFO(std::cout << "init the GstreamerPipeline class " << std::endl);
+        LOG_INFO(std::cout << "init the GstreamerPipeline class " << std::endl);
+        for (auto& buf : encodedFrames) {
+            buf.reserve(INITIAL_FRAME_BUFFER_SIZE);
+        }
     }
     GstreamerPipeline(const GstreamerPipeline &) = delete;
     GstreamerPipeline& operator=(const GstreamerPipeline &) = delete;
@@ -91,29 +97,26 @@ public:
         auto frameBuffer = encodedFrameData._buffer;
         auto frameSize = encodedFrameData._size;
         LOG_DEBUG(std::cout << " putEncodedFrame" << std::endl);
-        if(_pushbuffer[_pushBufferIndex%RING] !=NULL and gst_buffer_is_writable(_pushbuffer[_pushBufferIndex%RING]) == false){
-            gst_buffer_unref(_pushbuffer[_pushBufferIndex%RING]);
+        auto slot = _pushBufferIndex % RING;
+        // If frameSize exceeds capacity, the vector would reallocate — invalidating any GStreamer buffer
+        // still holding a pointer to the old memory. Unref it first to avoid use-after-free.
+        if (frameSize > encodedFrames[slot].capacity()) {
+            if (_pushbuffer[slot] != NULL) {
+                gst_buffer_unref(_pushbuffer[slot]);
+                _pushbuffer[slot] = NULL;
+            }
+        } else if (_pushbuffer[slot] != NULL && !gst_buffer_is_writable(_pushbuffer[slot])) {
+            gst_buffer_unref(_pushbuffer[slot]);
         }
 
-        /*if(thisIsTheFirstIDRFrame){
-            ASSERT_VERBOSE( ( myData.length + sizeof(av1Header) ) < MAX_BUFFER_OF_ENDOCDED_FRAME, "Frame length(" << myData.length << ") is more than " << MAX_BUFFER_OF_ENDOCDED_FRAME - 32);
-            memcpy(encodedFrames[_pushBufferIndex%RING], av1Header, sizeof(av1Header) );
-            memcpy(encodedFrames[_pushBufferIndex%RING] + sizeof(av1Header), myData.buffer, myData.length );
-            _lastBufferDataSize = sizeof(av1Header) + myData.length;
-        }
-        else{*/
-        if (frameSize >= MAX_BUFFER_OF_ENDOCDED_FRAME) {
-            LOG_ERROR(std::cout << "ERROR Frame length(" << frameSize << ") is more than maximum " << MAX_BUFFER_OF_ENDOCDED_FRAME << std::endl);
-            return;
-        }
-        memcpy(encodedFrames[_pushBufferIndex%RING], frameBuffer, frameSize );
+        encodedFrames[slot].resize(frameSize);
+        memcpy(encodedFrames[slot].data(), frameBuffer, frameSize);
         _lastBufferDataSize = frameSize;
-        //}
 
-        auto pushBufferIndex = _pushBufferIndex % RING;
+        auto pushBufferIndex = slot;
         _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped_full(
                                         GST_MEMORY_FLAG_READONLY,
-                                        encodedFrames[pushBufferIndex],
+                                        encodedFrames[pushBufferIndex].data(),
                                         _lastBufferDataSize,
                                         0,
                                         _lastBufferDataSize,
@@ -121,10 +124,10 @@ public:
                                         NULL  // No free function - we manage the memory
                                     );
         // _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped (encodedFrames[pushBufferIndex], _lastBufferDataSize);
-        GST_BUFFER_DURATION (_pushbuffer[pushBufferIndex] ) = gst_util_uint64_scale_int (1, GST_SECOND, 1);
+        GST_BUFFER_DURATION (_pushbuffer[pushBufferIndex] ) = GST_CLOCK_TIME_NONE;
         GST_BUFFER_TIMESTAMP (_pushbuffer[pushBufferIndex] ) = gst_util_uint64_scale (encodedFrameData._timestamp, GST_USECOND, 1);
         GST_BUFFER_OFFSET(_pushbuffer[pushBufferIndex]) = encodedFrameData._frameIndex;
-        GST_BUFFER_DTS(_pushbuffer[pushBufferIndex]) = encodedFrameData._frameIndex;
+        GST_BUFFER_DTS(_pushbuffer[pushBufferIndex]) = GST_BUFFER_TIMESTAMP(_pushbuffer[pushBufferIndex]);
         auto buffer = _pushbuffer[pushBufferIndex];
 
         LOG_DEBUG(std::cout << "XXX Frame push info: " << TRACE_VAL(GST_BUFFER_TIMESTAMP (buffer)) << std::endl);
@@ -248,9 +251,19 @@ public:
         if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ))
             return false;
 
-//        unsigned length = static_cast<unsigned>(GST_VIDEO_FRAME_SIZE(&frame));
-        copyMethod(info.width*info.height, 0, GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
-        copyMethod(info.width*info.height/2, info.width*info.height, GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
+        static bool loggedStrides = false;
+        if (!loggedStrides) {
+            loggedStrides = true;
+            LOG_INFO(std::cout << "extractFrameData strides: Y=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0)
+                               << " U=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1)
+                               << " V=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 2)
+                               << " size=" << info.width << "x" << info.height << std::endl);
+        }
+        unsigned ySize = info.width * info.height;
+        unsigned uvSize = info.width * info.height / 4;
+        copyMethod(ySize,          0,             GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
+        copyMethod(uvSize,         ySize,         GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
+        copyMethod(uvSize,         ySize + uvSize, GST_VIDEO_FRAME_PLANE_DATA(&frame, 2));
         gst_video_frame_unmap (&frame);
         gst_sample_unref(sample);
         return true;
@@ -277,7 +290,7 @@ private:
     //const std::string       _gstreamPipeline = "appsrc name=appsrc ! filesink location=/tmp/AV1Video.ivf";
     const std::string _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ?
         std::getenv("GSTREAMER_PIPELINE") :
-        "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
+        "appsrc name=appsrc is-live=true max-bytes=0 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
     // const std::string       _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ? std::getenv("GSTREAMER_PIPELINE") : "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! appsink name=appsink emit-signals=true sync=false";
     std::atomic<bool>       _isRunning;
     GstElement *appsrc = NULL;
@@ -286,8 +299,7 @@ private:
     bool                    _firstIDRArived         = false;
     static constexpr unsigned int RING=5;
     GstBuffer* _pushbuffer[RING] = {NULL,NULL,NULL,NULL,NULL};
-    static constexpr unsigned int MAX_BUFFER_OF_ENDOCDED_FRAME = 500000;
-    unsigned char encodedFrames[RING][MAX_BUFFER_OF_ENDOCDED_FRAME];
+    std::vector<unsigned char> encodedFrames[RING];
     unsigned int _pushBufferIndex = 0;
     unsigned int _popBufferIndex = 0;
     unsigned int _lastBufferDataSize = 0;
