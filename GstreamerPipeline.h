@@ -113,25 +113,6 @@ public:
         memcpy(encodedFrames[slot].data(), frameBuffer, frameSize);
         _lastBufferDataSize = frameSize;
 
-        if (!_capsSet && frameSize >= 5) {
-            // Detect codec from first NAL byte after Annex-B start code (00 00 00 01).
-            // In H264, SPS/PPS/IDR always have nal_ref_idc=3 (bits 5-6 both set → byte & 0x60 == 0x60).
-            // In H265, the first NAL byte (VPS=0x40, SPS=0x42, PPS=0x44, IDR=0x26/0x28)
-            // never has both bits 5 and 6 set simultaneously.
-            uint8_t nalByte = encodedFrames[slot].data()[4];
-            bool isH265 = (nalByte & 0x60) != 0x60;
-            const char* mimeType = isH265 ? "video/x-h265" : "video/x-h264";
-            GstCaps* caps = gst_caps_new_simple(mimeType,
-                                                "stream-format", G_TYPE_STRING, "byte-stream",
-                                                "alignment",     G_TYPE_STRING, "au",
-                                                NULL);
-            g_object_set(appsrc, "caps", caps, NULL);
-            gst_caps_unref(caps);
-            _capsSet = true;
-            LOG_INFO(std::cout << "putEncodedFrame: set appsrc caps to " << mimeType
-                               << " (NAL byte=0x" << std::hex << (int)nalByte << std::dec << ")" << std::endl);
-        }
-
         auto pushBufferIndex = slot;
         _pushbuffer[pushBufferIndex] = gst_buffer_new_wrapped_full(
                                         GST_MEMORY_FLAG_READONLY,
@@ -310,12 +291,12 @@ private:
     const std::string _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ?
         std::getenv("GSTREAMER_PIPELINE") :
         "appsrc name=appsrc is-live=true max-bytes=0 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
+    // const std::string       _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ? std::getenv("GSTREAMER_PIPELINE") : "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! appsink name=appsink emit-signals=true sync=false";
     std::atomic<bool>       _isRunning;
     GstElement *appsrc = NULL;
     GstBuffer *pushbuffer = NULL;
     GstFlowReturn ret;
     bool                    _firstIDRArived         = false;
-    bool                    _capsSet                = false;
     static constexpr unsigned int RING=5;
     GstBuffer* _pushbuffer[RING] = {NULL,NULL,NULL,NULL,NULL};
     std::vector<unsigned char> encodedFrames[RING];
