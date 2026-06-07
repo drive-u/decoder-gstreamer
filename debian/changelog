@@ -1,3 +1,17 @@
+driveu-decoder-gstreamer (1.02.0) bionic; urgency=medium
+
+  * Fix no-GPU GStreamer decoder producing corrupted video
+  * Remove 500KB static frame buffer cap that silently dropped I-frames
+  * Replace static array with dynamic vector; reserve 4MB/slot to prevent
+    reallocation while GStreamer holds a raw pointer (use-after-free)
+  * Fix DTS set to frame index instead of PTS (wrong decode order)
+  * Fix frame duration set to 1s (misled GStreamer jitter/pacing)
+  * Fix appsrc max-bytes=5000 dropping frames before decode
+  * Fix UV plane copy: copy U and V as separate planes, not combined
+  * Auto-detect H264/H265 codec and set appsrc caps on first frame
+
+ -- adi <adi@driveu.auto>  Sun, 07 Jun 2026 13:30:00 +0300
+
 driveu-decoder-gstreamer (1.01.0) bionic; urgency=medium
 
   * Initial release
