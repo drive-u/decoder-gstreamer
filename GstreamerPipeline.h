@@ -291,7 +291,6 @@ private:
     const std::string _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ?
         std::getenv("GSTREAMER_PIPELINE") :
         "appsrc name=appsrc is-live=true max-bytes=0 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
-    // const std::string       _gstreamPipeline = std::getenv("GSTREAMER_PIPELINE") ? std::getenv("GSTREAMER_PIPELINE") : "appsrc name=appsrc is-live=true max-bytes=5000 max-latency=5 ! decodebin ! appsink name=appsink emit-signals=true sync=false";
     std::atomic<bool>       _isRunning;
     GstElement *appsrc = NULL;
     GstBuffer *pushbuffer = NULL;
