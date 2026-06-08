@@ -8,7 +8,7 @@ driveu-decoder-gstreamer (1.02.0) bionic; urgency=medium
   * Fix frame duration set to 1s (misled GStreamer jitter/pacing)
   * Fix appsrc max-bytes=5000 dropping frames before decode
   * Fix UV plane copy: copy U and V as separate planes, not combined
-  * Auto-detect H264/H265 codec and set appsrc caps on first frame
+  * Force I420 output by adding videoconvert + capsfilter in the default pipeline
 
  -- adi <adi@driveu.auto>  Sun, 07 Jun 2026 13:30:00 +0300
 
