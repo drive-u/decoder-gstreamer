@@ -54,6 +54,7 @@ public:
             addBusWatch();
             GstElement *appsink = gst_bin_get_by_name( GST_BIN(_currentPipelineElement), "appsink" );
             g_signal_connect( appsink, "new_sample", G_CALLBACK( GstreamerPipeline::onNewSample ), this );
+            gst_object_unref(appsink);
             appsrc = gst_bin_get_by_name( GST_BIN(_currentPipelineElement), "appsrc" );
 
             startPipeline();
@@ -81,8 +82,9 @@ public:
         _currentPipelineElement = gst_parse_launch( pipe.c_str(), &e );
         if ( e != NULL || _currentPipelineElement == NULL ) {
             LOG_ERROR(std::cout << "ERROR Failed to run pipeline: " << std::endl);
-            LOG_ERROR(std::cout << " ~~~ " << pipe << std::endl << "[Error]: " << e->message << std::endl);
-            throw std::runtime_error(e->message);
+            const char* errMsg = (e != NULL) ? e->message : "unknown pipeline error";
+            LOG_ERROR(std::cout << " ~~~ " << pipe << std::endl << "[Error]: " << errMsg << std::endl);
+            throw std::runtime_error(errMsg);
         }
         assert(_currentPipelineElement != nullptr);
     }
@@ -98,18 +100,19 @@ public:
         auto frameSize = encodedFrameData._size;
         LOG_DEBUG(std::cout << " putEncodedFrame" << std::endl);
         auto slot = _pushBufferIndex % RING;
-        // If frameSize exceeds capacity, the vector would reallocate — invalidating any GStreamer buffer
-        // still holding a pointer to the old memory. Unref it first to avoid use-after-free.
-        if (frameSize > encodedFrames[slot].capacity()) {
-            if (_pushbuffer[slot] != NULL) {
-                gst_buffer_unref(_pushbuffer[slot]);
-                _pushbuffer[slot] = NULL;
+        // Always release the previous GstBuffer for this slot before reusing its backing memory.
+        if (_pushbuffer[slot] != NULL) {
+            // If frameSize exceeds capacity, resize will reallocate the vector — moving the pointer.
+            // If GStreamer still holds a reference to this buffer, that becomes a use-after-free.
+            if (frameSize > encodedFrames[slot].capacity() && !gst_buffer_is_writable(_pushbuffer[slot])) {
+                LOG_INFO(std::cout << "WARNING: GstBuffer slot " << slot << " still held by pipeline and reallocation is needed; consider increasing RING or INITIAL_FRAME_BUFFER_SIZE" << std::endl);
             }
-        } else if (_pushbuffer[slot] != NULL && !gst_buffer_is_writable(_pushbuffer[slot])) {
             gst_buffer_unref(_pushbuffer[slot]);
+            _pushbuffer[slot] = NULL;
         }
-
-        encodedFrames[slot].resize(frameSize);
+        if (frameSize > encodedFrames[slot].size()) {
+            encodedFrames[slot].resize(frameSize);
+        }
         memcpy(encodedFrames[slot].data(), frameBuffer, frameSize);
         _lastBufferDataSize = frameSize;
 
@@ -210,11 +213,13 @@ public:
         auto buffer = gst_sample_get_buffer(sample);
         if (caps == NULL || buffer == NULL) {
             LOG_INFO(std::cout << "WARNING  onVideoFrame: caps or buffer is null" << std::endl);
+            gst_sample_unref(sample);
             return;
         }
         GstVideoInfo info;
         if (!gst_video_info_from_caps(&info, caps)) {
             LOG_INFO(std::cout << "WARNING  onVideoFrame: failed get info" << std::endl);
+            gst_sample_unref(sample);
             return;
         }
         auto timestamp = GST_BUFFER_TIMESTAMP(buffer);
@@ -251,19 +256,30 @@ public:
         if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ))
             return false;
 
-        static bool loggedStrides = false;
-        if (!loggedStrides) {
-            loggedStrides = true;
+        static std::atomic<bool> loggedStrides{false};
+        if (!loggedStrides.exchange(true)) {
             LOG_INFO(std::cout << "extractFrameData strides: Y=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0)
                                << " U=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1)
                                << " V=" << GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 2)
                                << " size=" << info.width << "x" << info.height << std::endl);
         }
-        unsigned ySize = info.width * info.height;
-        unsigned uvSize = info.width * info.height / 4;
-        copyMethod(ySize,          0,             GST_VIDEO_FRAME_PLANE_DATA(&frame, 0));
-        copyMethod(uvSize,         ySize,         GST_VIDEO_FRAME_PLANE_DATA(&frame, 1));
-        copyMethod(uvSize,         ySize + uvSize, GST_VIDEO_FRAME_PLANE_DATA(&frame, 2));
+        const unsigned width  = (unsigned)info.width;
+        const unsigned height = (unsigned)info.height;
+        const unsigned ySize  = width * height;
+        const unsigned uvSize = width * height / 4;
+        const int strideY = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 0);
+        const int strideU = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 1);
+        const int strideV = GST_VIDEO_FRAME_PLANE_STRIDE(&frame, 2);
+        const uint8_t* planeY = (const uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 0);
+        const uint8_t* planeU = (const uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 1);
+        const uint8_t* planeV = (const uint8_t*)GST_VIDEO_FRAME_PLANE_DATA(&frame, 2);
+        for (unsigned r = 0; r < height; r++) {
+            copyMethod(width,     r * width,                     (void*)(planeY + r * strideY));
+        }
+        for (unsigned r = 0; r < height / 2; r++) {
+            copyMethod(width / 2, ySize + r * (width / 2),        (void*)(planeU + r * strideU));
+            copyMethod(width / 2, ySize + uvSize + r * (width / 2), (void*)(planeV + r * strideV));
+        }
         gst_video_frame_unmap (&frame);
         gst_sample_unref(sample);
         return true;
@@ -293,14 +309,11 @@ private:
         "appsrc name=appsrc is-live=true max-bytes=0 ! decodebin ! videoconvert ! video/x-raw,format=I420 ! appsink name=appsink emit-signals=true sync=false";
     std::atomic<bool>       _isRunning;
     GstElement *appsrc = NULL;
-    GstBuffer *pushbuffer = NULL;
     GstFlowReturn ret;
-    bool                    _firstIDRArived         = false;
-    static constexpr unsigned int RING=5;
-    GstBuffer* _pushbuffer[RING] = {NULL,NULL,NULL,NULL,NULL};
+    static constexpr unsigned int RING = 5;
+    GstBuffer* _pushbuffer[RING] = {NULL, NULL, NULL, NULL, NULL};
     std::vector<unsigned char> encodedFrames[RING];
     unsigned int _pushBufferIndex = 0;
-    unsigned int _popBufferIndex = 0;
     unsigned int _lastBufferDataSize = 0;
 
 };
