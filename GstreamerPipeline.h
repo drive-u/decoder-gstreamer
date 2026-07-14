@@ -245,16 +245,21 @@ public:
         GstBuffer *buffer = gst_sample_get_buffer(sample);
         if (caps == NULL || buffer == NULL) {
             LOG_INFO(std::cout << "WARNING processGframe: caps or buffer is null" << std::endl);
+            gst_sample_unref(sample);
             return false;
         }
         LOG_DEBUG(std::cout << "Frame pop info: " << TRACE_VAL(GST_BUFFER_TIMESTAMP(buffer))
                                           << TRACE_VAL(decodedFrameData._timestamp) << std::endl);
         GstVideoInfo info;
-        if (!gst_video_info_from_caps(&info, caps))
+        if (!gst_video_info_from_caps(&info, caps)) {
+            gst_sample_unref(sample);
             return false;
+        }
         GstVideoFrame frame;
-        if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ))
+        if (!gst_video_frame_map(&frame, &info, buffer, GST_MAP_READ)){
+            gst_sample_unref(sample);
             return false;
+        }
 
         static std::atomic<bool> loggedStrides{false};
         if (!loggedStrides.exchange(true)) {
