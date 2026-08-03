@@ -6,7 +6,6 @@
 #include <ctime>
 #include <iomanip>
 #include <fstream>
-#include <cuda.h>
 
 #include "../interface/FrameProcessApi.h"
 #include "GstreamerPipeline.h"
