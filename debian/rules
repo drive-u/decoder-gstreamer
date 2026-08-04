@@ -1,6 +1,17 @@
 #!/usr/bin/make -f
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
+
 %:
 	dh $@
+
+# The ARM64 artifact is built in the cross step from the repo root.
+# During cross packaging, skip local host rebuild and just package the .so.
+override_dh_auto_build:
+	if [ "$(DEB_HOST_ARCH)" = "arm64" ]; then \
+		echo "Skipping local build for arm64 packaging"; \
+	else \
+		dh_auto_build; \
+	fi
 
 override_dh_strip:
 	echo "Not stripping"

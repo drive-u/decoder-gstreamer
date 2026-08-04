@@ -4,7 +4,7 @@ Maintainer: hanan <hanan@driveu.auto>
 Standards-Version: 4.1.2
 
 Package: driveu-decoder-gstreamer
-Architecture: amd64
+Architecture: amd64 arm64
 Depends: gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav
 Description: DriveU decoders gstreamer lib
 
